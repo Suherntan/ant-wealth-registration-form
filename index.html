@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Client Policy Registration Form</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #faf9f5; display: flex; align-items: center; justify-content: center; min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+    #__bundler_loading { position: fixed; bottom: 20px; right: 20px; font: 13px/1.4 -apple-system, BlinkMacSystemFont, sans-serif; color: #666; background: #fff; padding: 8px 14px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.12); z-index: 10000; }
+    #__bundler_thumbnail { position: fixed; inset: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: #faf9f5; z-index: 9999; }
+    #__bundler_thumbnail svg { width: 100%; height: 100%; object-fit: contain; }
+    #__bundler_placeholder { color: #999; font-size: 14px; }
+  </style>
+  <noscript>
+    <style>#__bundler_loading { display: none; }</style>
+    <div style="position:fixed;bottom:12px;left:12px;font:13px/1.4 -apple-system,BlinkMacSystemFont,sans-serif;color:#999;background:rgba(255,255,255,0.9);padding:6px 12px;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,0.08);z-index:10000;">
+      This page requires JavaScript to display.
+    </div>
+  </noscript>
+</head>
+<body>
+  <div id="__bundler_thumbnail"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><rect width="200" height="200" fill="#022858"></rect><text x="30" y="115" font-family="Arial" font-size="60" font-weight="800" fill="#ffc000">AF</text></svg></div>
+  <div id="__bundler_loading">Unpacking...</div>
+
+  <script>
+    
+document.addEventListener('DOMContentLoaded', async function() {
+  const loading = document.getElementById('__bundler_loading');
+  function setStatus(msg) { if (loading) loading.textContent = msg; }
+
+  const FONT_MIME = /^(font[/]|application[/](x-)?font-|application[/]vnd\.ms-fontobject)/i;
+  const MIME_TOKEN = /^[\w.+-]+[/][\w.+-]+$/;
+  function toBase64(bytes) {
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(bin);
+  }
+
+  // Error sink persists across replaceWith since it's on window, not the DOM.
+  window.addEventListener('error', function(e) {
+    // Failed resource loads (CSP-blocked links, scripts, images) fire plain
+    // events at the element — warn only; real JS errors carry message/error.
+    if (!e.message && !e.error && e.target && e.target !== window) {
+      console.warn('[bundle] resource failed to load:',
+        e.target.tagName, String(e.target.src || e.target.href || ''));
+      return;
+    }
+    var p = document.body || document.documentElement;
+    var d = document.getElementById('__bundler_err') || p.appendChild(document.createElement('div'));
+    d.id = '__bundler_err';
+    d.style.cssText = 'position:fixed;bottom:12px;left:12px;right:12px;font:12px/1.4 ui-monospace,monospace;background:#2a1215;color:#ff8a80;padding:10px 14px;border-radius:8px;border:1px solid #5c2b2e;z-index:99999;white-space:pre-wrap;max-height:40vh;overflow:auto';
+    d.textContent = (d.textContent ? d.textContent + String.fromCharCode(10) : '') +
+      '[bundle] ' + (e.message || e.type) +
+      (e.filename ? ' (' + e.filename.slice(0, 60) + ':' + e.lineno + ')' : '');
+  }, true);
+
+  try {
+    const manifestEl = document.querySelector('script[type="__bundler/manifest"]');
+    const templateEl = document.querySelector('script[type="__bundler/template"]');
+    if (!manifestEl || !templateEl) {
+      setStatus('Error: missing bundle data');
+      console.error('[bundler] Missing script tags — manifestEl:', !!manifestEl, 'templateEl:', !!templateEl);
+      return;
+    }
+
+    const manifest = JSON.parse(manifestEl.textContent);
+    let template = JSON.parse(templateEl.textContent);
+
+    // Nested page bundles (iframe targets). Each ships ONCE, in the ROOT
+    // document's manifest; frame srcs carry an about:blank#<uuid> marker
+    // instead of a substitutable uuid. Every document mints the blobs for
+    // its OWN frames — from local text at the root, or text obtained from
+    // its DIRECT parent over the relay protocol below — so each frame
+    // navigation stays same-origin with its initiator and a deduped page
+    // loads at any depth on any host, including a file:// download's
+    // opaque origins (where a blob minted by one document cannot be
+    // navigated to by another).
+    const pageOrderEl = document.querySelector('script[type="__bundler/page_order"]');
+    const pageOrder = pageOrderEl ? JSON.parse(pageOrderEl.textContent) : [];
+    const pageSet = new Set(pageOrder);
+    const pageTexts = {};
+
+    // ── Nested-page text protocol (parent-chain relay) ──
+    // Page bundles ship once, in the ROOT document's manifest. Every
+    // document mints the blobs for its OWN frames, obtaining page text
+    // through a strict parent-chain relay: a document only ever SENDS to
+    // its direct parent (which, for every document the publisher's own
+    // runtime minted, is another publisher document) and only ACCEPTS
+    // text from that direct parent; requests from below are honored only
+    // for the document's own child frames, and the ROOT never sends
+    // upward at all. That last rule is load-bearing: the artifact host's
+    // frame-ancestors allows claude.ai (and friends) to frame an
+    // artifact, so window.top can be a FOREIGN document — a top-addressed
+    // protocol would hand page uuids to that ancestor and accept forged
+    // "page text" from it, minting attacker HTML as an artifact-origin
+    // blob document. The chain never touches the ancestor: requests stop
+    // at the root, replies are origin-addressed per hop (never '*' when
+    // an origin exists), and both directions are origin-gated (on https
+    // a foreign sender's origin can never equal this document's; in
+    // opaque contexts — file:// — everything serializes as 'null', where
+    // an embedded EXTERNAL frame still fails the gate by carrying its
+    // own real origin, and a sandboxed child of such a frame is excluded
+    // by the own-child-frames check plus uuid unguessability). Shape is
+    // deny-by-default: one request form, one reply form, no error
+    // replies.
+    // window.origin is the SERIALIZED SECURITY origin ('null' in opaque
+    // contexts such as a sandboxed preview iframe) — location.origin is
+    // computed from the URL and stays 'https://…' even when the document
+    // is sandboxed, which would misgate every opaque chain.
+    const OWN_TARGET = /^https?:[/][/]/.test(window.origin || '')
+      ? window.origin
+      : '*';
+    function trustedOrigin(e) {
+      if (e.origin === window.origin) return true; // https chains; opaque==opaque
+      // file:// trees: Chrome serializes the file document's origin as
+      // 'file://' while the blob: documents it mints serialize as 'null',
+      // so the two legitimate shapes can never string-match — accept the
+      // pair in both directions. https origins never serialize as either,
+      // and sender identity (own child frame / direct parent) is checked
+      // separately.
+      return (
+        (e.origin === 'null' &&
+          (window.origin === 'file://' ||
+            window.location.protocol === 'file:')) ||
+        (/^file:/.test(e.origin) && window.origin === 'null')
+      );
+    }
+    // Non-empty only in the root document (nested bundles ship an empty
+    // island), so it doubles as the root marker: the root answers from
+    // local text and treats a miss as authoritative — never relaying to
+    // its (possibly foreign) parent.
+    const isPageRoot = pageOrder.length > 0;
+    const blobUrls = {};
+    const resourceBlobs = {};
+    const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    const pendingFrames = {}; // uuid -> [{el, frag}] awaiting text for own frames
+    const pendingRelays = {}; // uuid -> [childWindow] awaiting text to pass down
+    function mountPage(el, frag, text) {
+      const pageBlob = new Blob([text], { type: 'text/html' });
+      const u = URL.createObjectURL(pageBlob);
+      resourceBlobs[u] = pageBlob;
+      el.src = u + frag;
+    }
+    function deliverPage(uuid, text) {
+      const frames = pendingFrames[uuid];
+      delete pendingFrames[uuid];
+      if (frames) for (const f of frames) mountPage(f.el, f.frag, text);
+      const relays = pendingRelays[uuid];
+      delete pendingRelays[uuid];
+      if (relays) {
+        for (const cw of relays) {
+          try { cw.postMessage({ __bundler_page: uuid, __bundler_text: text }, OWN_TARGET); } catch (err) { /* gone */ }
+        }
+      }
+    }
+    function ownFrameWindows() {
+      const out = [];
+      for (const f of Array.from(document.querySelectorAll('iframe'))) {
+        try { if (f.contentWindow) out.push(f.contentWindow); } catch (err) { /* detached */ }
+      }
+      return out;
+    }
+    window.addEventListener('message', function (e) {
+      const d = e.data;
+      if (!d || typeof d !== 'object' || !e.source) return;
+      // Origin gate first; the structural checks below (own-child-frames
+      // for requests, direct-parent + solicited-uuid for replies, the
+      // root's never-relay rule) are what hold in fully opaque chains
+      // where origin strings can't discriminate — a sandboxed root's
+      // FOREIGN wrapper still fails all three even though both serialize
+      // as real-vs-'null' rather than matching.
+      if (!trustedOrigin(e)) return;
+      if (typeof d.__bundler_need === 'string' && UUID_SHAPE.test(d.__bundler_need)) {
+        // Requests are honored only for this document's own child frames.
+        if (ownFrameWindows().indexOf(e.source) < 0) return;
+        const uuid = d.__bundler_need;
+        const text = pageTexts[uuid];
+        if (typeof text === 'string') {
+          try { e.source.postMessage({ __bundler_page: uuid, __bundler_text: text }, OWN_TARGET); } catch (err) { /* gone */ }
+          return;
+        }
+        if (isPageRoot || window.parent === window) return; // authoritative miss
+        const waiting = pendingRelays[uuid];
+        if (waiting) {
+          if (waiting.indexOf(e.source) < 0) waiting.push(e.source);
+          return;
+        }
+        // Never-answered uuids would otherwise accumulate forever under a
+        // request spray; past the cap (far above any real page count) new
+        // relays are dropped rather than remembered.
+        if (Object.keys(pendingRelays).length >= 128) return;
+        pendingRelays[uuid] = [e.source];
+        window.parent.postMessage({ __bundler_need: uuid }, OWN_TARGET);
+      } else if (
+        typeof d.__bundler_page === 'string' &&
+        UUID_SHAPE.test(d.__bundler_page) &&
+        typeof d.__bundler_text === 'string'
+      ) {
+        // The shape test is load-bearing beyond tidiness: the solicited
+        // check below uses the in operator, which matches prototype keys
+        // ('__proto__', 'constructor') — an unshaped key would reach
+        // deliverPage and throw, painting the error banner.
+        // Text is accepted only from the direct parent — the document
+        // that minted this one.
+        if (e.source !== window.parent || window.parent === window) return;
+        if (!(d.__bundler_page in pendingFrames) && !(d.__bundler_page in pendingRelays)) return;
+        deliverPage(d.__bundler_page, d.__bundler_text);
+      }
+    });
+
+    const uuids = Object.keys(manifest);
+    setStatus('Unpacking ' + uuids.length + ' assets...');
+
+    await Promise.all(uuids.map(async (uuid) => {
+      const entry = manifest[uuid];
+      try {
+        const binaryStr = atob(entry.data);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+
+        let finalBytes = bytes;
+        if (entry.compressed) {
+          if (typeof DecompressionStream !== 'undefined') {
+            const ds = new DecompressionStream('gzip');
+            const writer = ds.writable.getWriter();
+            const reader = ds.readable.getReader();
+            writer.write(bytes);
+            writer.close();
+            const chunks = [];
+            let totalLen = 0;
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              chunks.push(value);
+              totalLen += value.length;
+            }
+            finalBytes = new Uint8Array(totalLen);
+            let offset = 0;
+            for (const chunk of chunks) { finalBytes.set(chunk, offset); offset += chunk.length; }
+          } else {
+            console.warn('DecompressionStream not available, asset ' + uuid + ' may not render');
+          }
+        }
+
+        if (pageSet.has(uuid)) {
+          pageTexts[uuid] = new TextDecoder().decode(finalBytes);
+          return;
+        }
+        if (FONT_MIME.test(entry.mime) && MIME_TOKEN.test(entry.mime)) {
+          // Strict artifact hosts allow font-src data: but not blob:.
+          blobUrls[uuid] = 'data:' + entry.mime + ';base64,' +
+            (entry.compressed ? toBase64(finalBytes) : entry.data);
+        } else {
+          const blob = new Blob([finalBytes], { type: entry.mime });
+          blobUrls[uuid] = URL.createObjectURL(blob);
+          resourceBlobs[blobUrls[uuid]] = blob;
+        }
+      } catch (err) {
+        console.error('Failed to decode asset ' + uuid + ':', err);
+        const blob = new Blob([], { type: entry.mime });
+        blobUrls[uuid] = URL.createObjectURL(blob);
+        resourceBlobs[blobUrls[uuid]] = blob;
+      }
+    }));
+
+    const extResEl = document.querySelector('script[type="__bundler/ext_resources"]');
+    const extResources = extResEl ? JSON.parse(extResEl.textContent) : [];
+    const resourceMap = {};
+    for (const entry of extResources) {
+      if (blobUrls[entry.uuid]) resourceMap[entry.id] = blobUrls[entry.uuid];
+    }
+
+    // Artifact-host CSP (connect-src 'self') refuses fetch() of blob: URLs —
+    // consumers read these Blobs directly. Survives the swap like the error sink.
+    window.__resourceBlobs = resourceBlobs;
+
+    setStatus('Rendering...');
+    // Page uuids have no blob here — they ride inside about:blank#<uuid>
+    // frame markers the pass below resolves after the swap.
+    for (const uuid of uuids) {
+      if (pageSet.has(uuid)) continue;
+      template = template.split(uuid).join(blobUrls[uuid]);
+    }
+
+    // Strip integrity + crossorigin — blob URLs from a file:// document inherit
+    // a null origin, so crossorigin forces a CORS fetch that SRI then rejects.
+    // The manifest bytes are ours; SRI protects against CDN compromise, not this.
+    template = template.replace(/\s+integrity="[^"]*"/gi, '').replace(/\s+crossorigin="[^"]*"/gi, '');
+
+    const resourceScript = '<script>window.__resources = ' +
+      JSON.stringify(resourceMap).replace(/<\//g, '<\\/') +
+      ';</' + 'script>';
+    // Inject after <head> so the DOCTYPE stays first; prepending the script
+    // would push the parser into quirks mode. DOMParser always emits a <head>
+    // (synthesizing one if the source HTML omitted it) but may carry
+    // attributes through, so match the full opening tag. slice() rather than
+    // replace() keeps us clear of $-pattern substitution in resourceScript.
+    const headOpen = template.match(/<head[^>]*>/i);
+    if (headOpen) {
+      const i = headOpen.index + headOpen[0].length;
+      template = template.slice(0, i) + resourceScript + template.slice(i);
+    }
+
+    // Parse the template and swap the root element. Scripts inserted via
+    // DOMParser/replaceWith are inert per spec — re-create each with
+    // createElement so they execute, awaiting onload for src scripts to
+    // preserve ordering (React before ReactDOM before Babel before text/babel).
+    const doc = new DOMParser().parseFromString(template, 'text/html');
+    document.documentElement.replaceWith(doc.documentElement);
+
+    // Resolve page-frame markers: mint this document's own blob for each
+    // framed page — from local text when this is the root, otherwise by
+    // asking the direct parent over the relay protocol above. An
+    // unanswered request leaves the frame on about:blank, the same
+    // degraded state as a refused embed.
+    {
+      const MARKER = /^about:blank#([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(#.*)?$/;
+      const needed = [];
+      for (const el of Array.from(document.querySelectorAll('iframe'))) {
+        const m = MARKER.exec(el.getAttribute('src') || '');
+        if (!m) continue;
+        const text = pageTexts[m[1]];
+        if (typeof text === 'string') {
+          mountPage(el, m[2] || '', text);
+        } else if (window.parent !== window && !isPageRoot) {
+          const had = pendingFrames[m[1]];
+          (pendingFrames[m[1]] = had || []).push({ el: el, frag: m[2] || '' });
+          if (!had) needed.push(m[1]);
+        }
+      }
+      for (const uuid of needed) {
+        window.parent.postMessage({ __bundler_need: uuid }, OWN_TARGET);
+      }
+    }
+
+    const dead = Array.from(document.scripts);
+    for (const old of dead) {
+      const s = document.createElement('script');
+      for (const a of old.attributes) s.setAttribute(a.name, a.value);
+      s.textContent = old.textContent;
+      // text/babel scripts with a src: read and inline. transformScriptTags
+      // does XHR against the src, but blob:null/ from a file:// origin is
+      // silently dropped. Inlining makes it a plain inline babel script,
+      // which transformScriptTags handles unconditionally.
+      if ((s.type === 'text/babel' || s.type === 'text/jsx') && s.src) {
+        const pre = resourceBlobs[s.src.split('#')[0]];
+        s.textContent = pre ? await pre.text() : await (await fetch(s.src)).text();
+        s.removeAttribute('src');
+      }
+      const p = s.src ? new Promise(function(r) { s.onload = s.onerror = r; }) : null;
+      old.replaceWith(s);
+      if (p) await p;
+    }
+    // Babel standalone auto-transforms type=text/babel on DOMContentLoaded,
+    // which fired before we swapped the document. Trigger manually if present.
+    if (window.Babel && typeof window.Babel.transformScriptTags === 'function') {
+      window.Babel.transformScriptTags();
+    }
+  } catch (err) {
+    setStatus('Error unpacking: ' + err.message);
+    console.error('Bundle unpack error:', err);
+  }
+});
+
+  </script>
+
+  <script type="__bundler/manifest">
+{}
+  </script>
+
+  <script type="__bundler/ext_resources">
+[]
+  </script>
+
+  <script type="__bundler/page_order">
+[]
+  </script>
+
+  <script type="__bundler/template">
+"<!DOCTYPE html>\n<html><head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Client Policy Registration Form<\u002Ftitle>\n\n<style>\nbody{margin:0;font-family:Arial,Helvetica,sans-serif;background:#fff;color:#111}\n.wrap{max-width:1040px;margin:32px auto;padding:0 20px}\n.arf-field{display:flex;flex-direction:column;gap:4px}\n.arf-field input,.arf-field textarea,.arf-field select{font-family:Arial,Helvetica,sans-serif;font-size:14px;padding:9px 12px;border:1px solid #d5d9e0;border-radius:6px;color:#111;width:100%;box-sizing:border-box}\n.arf-field label{font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:700;color:#3a4454}\n.section-band{background:#022858;color:#ffc000;font-weight:700;font-size:13px;letter-spacing:0.08em;text-transform:uppercase;padding:10px 16px;border-radius:6px;margin-bottom:14px}\n.group-band{background:#ffc000;color:#111;font-weight:800;font-size:16px;letter-spacing:0.04em;padding:12px 20px;border-radius:8px;margin-bottom:20px}\n.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px 20px;margin-bottom:24px}\n.full{grid-column:1/-1}\n.sig-box{border:1px solid #e5e5e5;border-radius:10px;padding:16px}\n.sig-canvas{border:1px dashed #c7cdd6;border-radius:8px;width:100%;height:130px;touch-action:none;cursor:crosshair;display:block}\n.sig-row{display:flex;justify-content:space-between;align-items:center;margin:6px 0 14px}\n.clear-btn{font-size:11px;font-weight:700;color:#022858;background:none;border:1px solid #d5d9e0;border-radius:999px;padding:4px 12px;cursor:pointer}\n.submit-btn{font-family:Arial,Helvetica,sans-serif;font-weight:700;font-size:14px;color:#fff;background:#022858;border:none;border-radius:999px;padding:14px 32px;cursor:pointer}\na{color:#022858}a:hover{color:#b8811f}\n@media (max-width:640px){.grid2{grid-template-columns:1fr}}\n<\u002Fstyle>\n<\u002Fhead>\n<body>\n<div class=\"wrap\">\n\n<div style=\"display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 4px 20px;border-bottom:3px solid #ffc000;margin-bottom:24px\">\n<div style=\"font-weight:800;font-size:20px;color:#022858\">ANT WEALTH SYSTEM<\u002Fdiv>\n<div style=\"text-align:right\">\n<div style=\"font-weight:800;font-size:24px;color:#022858\">Client Policy Registration Form<\u002Fdiv>\n<div style=\"font-size:12px;color:#68707c;letter-spacing:0.08em;text-transform:uppercase\">Analyze. Navigate. Transform.<\u002Fdiv>\n<\u002Fdiv>\n<\u002Fdiv>\n\n<div id=\"settingsBox\" style=\"display:none;background:#f8f9fb;border:1px solid #e5e5e5;border-radius:8px;padding:12px 16px;margin-bottom:20px;font-size:12px;color:#3a4454\">\n<label style=\"display:block;font-weight:700;margin-bottom:6px\">Google Apps Script Web App URL (one-time setup — saves submissions as PDF to your Drive)<\u002Flabel>\n<div style=\"display:flex;gap:8px\">\n<input id=\"webAppUrl\" placeholder=\"https://script.google.com/macros/s/AKfycb.../exec\" style=\"flex:1;font-size:12px;padding:8px 10px;border:1px solid #d5d9e0;border-radius:6px\">\n<button type=\"button\" id=\"saveUrlBtn\" class=\"clear-btn\">Save<\u002Fbutton>\n<\u002Fdiv>\n<div id=\"urlSavedMsg\" style=\"display:none;color:#00913f;margin-top:6px\">Saved.<\u002Fdiv>\n<\u002Fdiv>\n<div style=\"text-align:right;margin-bottom:10px\"><a href=\"#\" id=\"editSetupLink\" style=\"font-size:11px;color:#a7adb6;text-decoration:underline\">Setup<\u002Fa><\u002Fdiv>\n\n<div class=\"group-band\">REGISTRATION INFO — POLICY OWNER<\u002Fdiv>\n\n<div class=\"section-band\">A. Personal Info<\u002Fdiv>\n<div class=\"grid2\">\n<div class=\"arf-field\"><label>1. Full Name (as per IC)<\u002Flabel><input placeholder=\"Full name\"><\u002Fdiv>\n<div class=\"arf-field\"><label>2. IC No<\u002Flabel><input placeholder=\"IC number\"><\u002Fdiv>\n<div class=\"arf-field\"><label>3. Date of Birth<\u002Flabel><input type=\"date\"><\u002Fdiv>\n<div class=\"arf-field\"><label>4. Race<\u002Flabel><input placeholder=\"Race\"><\u002Fdiv>\n<div class=\"arf-field\"><label>5. Gender<\u002Flabel><select><option value=\"\">Select<\u002Foption><option>Male<\u002Foption><option>Female<\u002Foption><\u002Fselect><\u002Fdiv>\n<div class=\"arf-field\"><label>6. Weight (kg)<\u002Flabel><input type=\"number\" placeholder=\"kg\"><\u002Fdiv>\n<div class=\"arf-field\"><label>7. Height (cm)<\u002Flabel><input type=\"number\" placeholder=\"cm\"><\u002Fdiv>\n<div class=\"arf-field full\"><label>8. Home Address<\u002Flabel><textarea rows=\"2\" placeholder=\"Home address\"><\u002Ftextarea><\u002Fdiv>\n<div class=\"arf-field\"><label>9. HP No<\u002Flabel><input placeholder=\"Phone number\"><\u002Fdiv>\n<div class=\"arf-field\"><label>10. Email<\u002Flabel><input type=\"email\" placeholder=\"Email address\"><\u002Fdiv>\n<div class=\"arf-field\"><label>11. Smoker (Y/N)<\u002Flabel><select><option value=\"\">Select<\u002Foption><option>Yes<\u002Foption><option>No<\u002Foption><\u002Fselect><\u002Fdiv>\n<div class=\"arf-field\"><label>12. How many sticks per week<\u002Flabel><input type=\"number\" placeholder=\"Sticks/week\"><\u002Fdiv>\n<div class=\"arf-field\"><label>13. Alcohol Drinker (Y/N)<\u002Flabel><select><option value=\"\">Select<\u002Foption><option>Yes<\u002Foption><option>No<\u002Foption><\u002Fselect><\u002Fdiv>\n<div class=\"arf-field\"><label>14. Type of alcohol (wine/beer/liquor)<\u002Flabel><input placeholder=\"Type\"><\u002Fdiv>\n<div class=\"arf-field\"><label>15. How many glasses per week<\u002Flabel><input type=\"number\" placeholder=\"Glasses/week\"><\u002Fdiv>\n<\u002Fdiv>\n\n<div class=\"section-band\">B. Bank Info (for future claims purposes)<\u002Fdiv>\n<div class=\"grid2\">\n<div class=\"arf-field full\"><label>Full Name of Account Holder (as in IC)<\u002Flabel><input placeholder=\"Account holder name\"><\u002Fdiv>\n<div class=\"arf-field\"><label>Account No<\u002Flabel><input placeholder=\"Account number\"><\u002Fdiv>\n<div class=\"arf-field\"><label>Name of Bank<\u002Flabel><input placeholder=\"Bank name\"><\u002Fdiv>\n<div class=\"arf-field\"><label>Account Type<\u002Flabel><select><option value=\"\">Select<\u002Foption><option>Current<\u002Foption><option>Savings<\u002Foption><option>Joint<\u002Foption><\u002Fselect><\u002Fdiv>\n<div class=\"arf-field\"><label>Account Nature<\u002Flabel><select><option value=\"\">Select<\u002Foption><option>Conventional<\u002Foption><option>Islamic<\u002Foption><\u002Fselect><\u002Fdiv>\n<\u002Fdiv>\n\n<div class=\"section-band\">C. Occupation Info<\u002Fdiv>\n<div class=\"grid2\">\n<div class=\"arf-field\"><label>Occupation<\u002Flabel><input placeholder=\"Occupation\"><\u002Fdiv>\n<div class=\"arf-field\"><label>Nature of Work<\u002Flabel><input placeholder=\"Nature of work\"><\u002Fdiv>\n<div class=\"arf-field\"><label>Name of Company<\u002Flabel><input placeholder=\"Company name\"><\u002Fdiv>\n<div class=\"arf-field\"><label>Company Industry<\u002Flabel><input placeholder=\"Industry\"><\u002Fdiv>\n<div class=\"arf-field full\"><label>Address of Company<\u002Flabel><textarea rows=\"2\" placeholder=\"Company address\"><\u002Ftextarea><\u002Fdiv>\n<div class=\"arf-field\"><label>Company Contact No<\u002Flabel><input placeholder=\"Contact number\"><\u002Fdiv>\n<div class=\"arf-field\"><label>Estimated Income Per Year<\u002Flabel><input placeholder=\"RM\"><\u002Fdiv>\n<\u002Fdiv>\n\n<div class=\"section-band\">D. History of Health<\u002Fdiv>\n<div class=\"grid2\">\n<div class=\"arf-field\"><label>1. Have you been hospitalised (Y/N)<\u002Flabel><select><option value=\"\">Select<\u002Foption><option>Yes<\u002Foption><option>No<\u002Foption><\u002Fselect><\u002Fdiv>\n<div class=\"arf-field\"><label>2.1 If YES, reason for hospitalisation<\u002Flabel><input placeholder=\"Reason\"><\u002Fdiv>\n<div class=\"arf-field\"><label>2.2 When (age / year of admission)<\u002Flabel><input placeholder=\"Age or year\"><\u002Fdiv>\n<div class=\"arf-field\"><label>2.3 Which hospital<\u002Flabel><input placeholder=\"Hospital name\"><\u002Fdiv>\n<div class=\"arf-field\"><label>2.4 Diagnosis<\u002Flabel><input placeholder=\"Diagnosis\"><\u002Fdiv>\n<div class=\"arf-field\"><label>2.5 What happened after discharge / follow-up<\u002Flabel><input placeholder=\"Follow-up\"><\u002Fdiv>\n<div class=\"arf-field full\"><label>2.6 Does your immediate family (parents/siblings) have any critical illness or sickness needing long-term care (Y/N)<\u002Flabel><select><option value=\"\">Select<\u002Foption><option>Yes<\u002Foption><option>No<\u002Foption><\u002Fselect><\u002Fdiv>\n<div class=\"arf-field full\"><label>2.7 If 2.6 is YES, please state details<\u002Flabel><textarea rows=\"2\" placeholder=\"Details\"><\u002Ftextarea><\u002Fdiv>\n<\u002Fdiv>\n\n<div class=\"section-band\">E. Premium Payment Info<\u002Fdiv>\n<div class=\"grid2\">\n<div class=\"arf-field\"><label>1. Premium Payment Mode (M/Q/HY/Y)<\u002Flabel><select><option value=\"\">Select<\u002Foption><option>Monthly<\u002Foption><option>Quarterly<\u002Foption><option>Half-Yearly<\u002Foption><option>Yearly<\u002Foption><\u002Fselect><\u002Fdiv>\n<div class=\"arf-field\"><label>2. Premium Payment Method<\u002Flabel><select><option value=\"\">Select<\u002Foption><option>Debit Card<\u002Foption><option>Credit Card<\u002Foption><option>Bank Transfer<\u002Foption><option>Cheque<\u002Foption><\u002Fselect><\u002Fdiv>\n<div class=\"arf-field\"><label>3.1 If card, choose Debit/Credit<\u002Flabel><select><option value=\"\">Select<\u002Foption><option>Debit<\u002Foption><option>Credit<\u002Foption><\u002Fselect><\u002Fdiv>\n<div class=\"arf-field\"><label>3.2 Name on Card<\u002Flabel><input placeholder=\"Cardholder name\"><\u002Fdiv>\n<div class=\"arf-field\"><label>3.3 Card No<\u002Flabel><input placeholder=\"Card number\"><\u002Fdiv>\n<div class=\"arf-field\"><label>3.4 Bank Name for Card<\u002Flabel><input placeholder=\"Bank name\"><\u002Fdiv>\n<div class=\"arf-field\"><label>3.5 Card Expiry<\u002Flabel><input placeholder=\"MM/YY\"><\u002Fdiv>\n<\u002Fdiv>\n<div style=\"font-size:12px;color:#c62828;font-weight:700;margin:-8px 0 24px\">*Advisor will call for CVV/TAC only at the moment of submission. Do not write CVV here.<\u002Fdiv>\n\n<div style=\"display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:32px\" class=\"sig-grid2\">\n<div class=\"sig-box\">\n<div style=\"font-size:13px;font-weight:700;color:#111;margin-bottom:10px\">Signature of Life Insured / Policy Owner<\u002Fdiv>\n<canvas id=\"sig1\" class=\"sig-canvas\" width=\"460\" height=\"130\"><\u002Fcanvas>\n<div class=\"sig-row\"><span style=\"font-size:11px;color:#68707c\">Sign above<\u002Fspan><span><button type=\"button\" class=\"clear-btn\" data-download=\"sig1\">Download<\u002Fbutton> <button type=\"button\" class=\"clear-btn\" data-clear=\"sig1\">Clear<\u002Fbutton><\u002Fspan><\u002Fdiv>\n<div class=\"arf-field\" style=\"margin-bottom:10px\"><label>Name<\u002Flabel><input placeholder=\"Full name\"><\u002Fdiv>\n<div class=\"arf-field\"><label>IC<\u002Flabel><input placeholder=\"IC number\"><\u002Fdiv>\n<\u002Fdiv>\n<div class=\"sig-box\">\n<div style=\"font-size:13px;font-weight:700;color:#111;margin-bottom:10px\">Signature of Premium Payor Person<\u002Fdiv>\n<canvas id=\"sig2\" class=\"sig-canvas\" width=\"460\" height=\"130\"><\u002Fcanvas>\n<div class=\"sig-row\"><span style=\"font-size:11px;color:#68707c\">Sign above<\u002Fspan><span><button type=\"button\" class=\"clear-btn\" data-download=\"sig2\">Download<\u002Fbutton> <button type=\"button\" class=\"clear-btn\" data-clear=\"sig2\">Clear<\u002Fbutton><\u002Fspan><\u002Fdiv>\n<div class=\"arf-field\" style=\"margin-bottom:10px\"><label>Name<\u002Flabel><input placeholder=\"Full name\"><\u002Fdiv>\n<div class=\"arf-field\"><label>IC<\u002Flabel><input placeholder=\"IC number\"><\u002Fdiv>\n<\u002Fdiv>\n<\u002Fdiv>\n\n<div class=\"group-band\">REGISTRATION INFO — LIFE INSURED<\u002Fdiv>\n<div style=\"font-size:12px;color:#68707c;margin-bottom:20px\">Child / Spouse, other than Policy Owner<\u002Fdiv>\n\n<div class=\"section-band\">A. Personal Info<\u002Fdiv>\n<div class=\"grid2\">\n<div class=\"arf-field\"><label>1. Full Name (IC)<\u002Flabel><input placeholder=\"Full name\"><\u002Fdiv>\n<div class=\"arf-field\"><label>2. IC Number (digital copy must be provided)<\u002Flabel><input placeholder=\"IC number\"><\u002Fdiv>\n<div class=\"arf-field\"><label>3. Date of Birth<\u002Flabel><input type=\"date\"><\u002Fdiv>\n<div class=\"arf-field\"><label>4. Race<\u002Flabel><input placeholder=\"Race\"><\u002Fdiv>\n<div class=\"arf-field\"><label>5. Gender<\u002Flabel><select><option value=\"\">Select<\u002Foption><option>Male<\u002Foption><option>Female<\u002Foption><\u002Fselect><\u002Fdiv>\n<div class=\"arf-field\"><label>6. Weight (kg)<\u002Flabel><input type=\"number\" placeholder=\"kg\"><\u002Fdiv>\n<div class=\"arf-field\"><label>7. Height (cm)<\u002Flabel><input type=\"number\" placeholder=\"cm\"><\u002Fdiv>\n<\u002Fdiv>\n\n<div class=\"section-band\">B. Occupation Info (if spouse is working)<\u002Fdiv>\n<div class=\"grid2\">\n<div class=\"arf-field\"><label>16. Occupation<\u002Flabel><input placeholder=\"Occupation\"><\u002Fdiv>\n<div class=\"arf-field\"><label>17. Nature of Work<\u002Flabel><input placeholder=\"Nature of work\"><\u002Fdiv>\n<div class=\"arf-field\"><label>18. Name of Company<\u002Flabel><input placeholder=\"Company name\"><\u002Fdiv>\n<div class=\"arf-field\"><label>19. Company Industry<\u002Flabel><input placeholder=\"Industry\"><\u002Fdiv>\n<div class=\"arf-field full\"><label>20. Address of Company<\u002Flabel><textarea rows=\"2\" placeholder=\"Company address\"><\u002Ftextarea><\u002Fdiv>\n<div class=\"arf-field\"><label>21. Company Contact No<\u002Flabel><input placeholder=\"Contact number\"><\u002Fdiv>\n<div class=\"arf-field\"><label>22. Estimated Income Per Year<\u002Flabel><input placeholder=\"RM\"><\u002Fdiv>\n<\u002Fdiv>\n\n<div class=\"section-band\">C. History of Health<\u002Fdiv>\n<div class=\"grid2\">\n<div class=\"arf-field full\"><label>Does your immediate family (parents/siblings) have any critical illness or sickness needing long-term care (Y/N)<\u002Flabel><select><option value=\"\">Select<\u002Foption><option>Yes<\u002Foption><option>No<\u002Foption><\u002Fselect><\u002Fdiv>\n<\u002Fdiv>\n\n<div class=\"section-band\">D. Banking Information &amp; Nominee(s)<\u002Fdiv>\n<div style=\"display:grid;grid-template-columns:1fr 1fr;gap:14px 20px;margin-bottom:14px\">\n<div class=\"arf-field\"><label>23. Name of Bank<\u002Flabel><input placeholder=\"Bank name\"><\u002Fdiv>\n<div class=\"arf-field\"><label>23. Bank Account Number<\u002Flabel><input placeholder=\"Account number\"><\u002Fdiv>\n<\u002Fdiv>\n<div style=\"font-size:12px;color:#68707c;margin-bottom:10px\">24. Nominee(s) — copy of all IC must be provided<\u002Fdiv>\n<div class=\"grid2\">\n<div class=\"arf-field\"><label>a) Name and Share %<\u002Flabel><input placeholder=\"Name (Share %)\"><\u002Fdiv>\n<div class=\"arf-field\"><label>b) Name and Share %<\u002Flabel><input placeholder=\"Name (Share %)\"><\u002Fdiv>\n<div class=\"arf-field\"><label>c) Name and Share %<\u002Flabel><input placeholder=\"Name (Share %)\"><\u002Fdiv>\n<div class=\"arf-field\"><label>d) Name and Share %<\u002Flabel><input placeholder=\"Name (Share %)\"><\u002Fdiv>\n<\u002Fdiv>\n\n<div style=\"font-size:12px;color:#c62828;font-weight:700;margin-bottom:16px\">*Advisor will call for CVV/TAC only at the moment of submission. Do not write CVV here.<\u002Fdiv>\n<div class=\"sig-box\" style=\"margin-bottom:32px;max-width:500px\">\n<div style=\"font-size:13px;font-weight:700;color:#111;margin-bottom:10px\">Signature of Policy Owner<\u002Fdiv>\n<canvas id=\"sig3\" class=\"sig-canvas\" width=\"460\" height=\"130\"><\u002Fcanvas>\n<div class=\"sig-row\"><span style=\"font-size:11px;color:#68707c\">Sign above<\u002Fspan><span><button type=\"button\" class=\"clear-btn\" data-download=\"sig3\">Download<\u002Fbutton> <button type=\"button\" class=\"clear-btn\" data-clear=\"sig3\">Clear<\u002Fbutton><\u002Fspan><\u002Fdiv>\n<div class=\"arf-field\"><label>Name<\u002Flabel><input placeholder=\"Full name\"><\u002Fdiv>\n<\u002Fdiv>\n\n<div style=\"display:flex;justify-content:flex-end;padding-bottom:40px\">\n<button type=\"button\" class=\"submit-btn\" id=\"submitBtn\">Submit Registration<\u002Fbutton>\n<\u002Fdiv>\n<div id=\"submitStatus\" style=\"text-align:right;font-size:13px;color:#68707c;padding-bottom:40px\"><\u002Fdiv>\n\n<\u002Fdiv>\n<iframe name=\"hidden_submit_frame\" style=\"display:none\"><\u002Fiframe>\n<form id=\"hiddenSubmitForm\" method=\"POST\" target=\"hidden_submit_frame\" style=\"display:none\">\n<input type=\"hidden\" name=\"payload\" id=\"payloadInput\">\n<\u002Fform>\n\n<script>\n(function(){\n  function setupSignaturePad(canvas) {\n    var ctx = canvas.getContext('2d');\n    var drawing = false, last = null;\n    function pos(e) {\n      var rect = canvas.getBoundingClientRect();\n      var clientX = e.touches ? e.touches[0].clientX : e.clientX;\n      var clientY = e.touches ? e.touches[0].clientY : e.clientY;\n      var scaleX = canvas.width / rect.width, scaleY = canvas.height / rect.height;\n      return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };\n    }\n    function start(e) { drawing = true; last = pos(e); e.preventDefault(); }\n    function move(e) {\n      if (!drawing) return;\n      var p = pos(e);\n      ctx.strokeStyle = '#022858'; ctx.lineWidth = 2; ctx.lineCap = 'round';\n      ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();\n      last = p; e.preventDefault();\n    }\n    function end() { drawing = false; }\n    canvas.addEventListener('mousedown', start);\n    canvas.addEventListener('mousemove', move);\n    canvas.addEventListener('mouseup', end);\n    canvas.addEventListener('mouseleave', end);\n    canvas.addEventListener('touchstart', start, { passive: false });\n    canvas.addEventListener('touchmove', move, { passive: false });\n    canvas.addEventListener('touchend', end);\n  }\n  ['sig1','sig2','sig3'].forEach(function(id){ setupSignaturePad(document.getElementById(id)); });\n  document.querySelectorAll('[data-clear]').forEach(function(btn){\n    btn.addEventListener('click', function(){\n      var canvas = document.getElementById(btn.getAttribute('data-clear'));\n      canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);\n    });\n  });\n  document.querySelectorAll('[data-download]').forEach(function(btn){\n    btn.addEventListener('click', function(){\n      var id = btn.getAttribute('data-download');\n      var canvas = document.getElementById(id);\n      var link = document.createElement('a');\n      link.download = id + '-signature.png';\n      link.href = canvas.toDataURL('image/png');\n      link.click();\n    });\n  });\n  document.getElementById('saveUrlBtn').addEventListener('click', function () {\n    var url = document.getElementById('webAppUrl').value.trim();\n    if (!url) return;\n    localStorage.setItem('antRegFormWebAppUrl', url);\n    var msg = document.getElementById('urlSavedMsg');\n    msg.style.display = 'block';\n    setTimeout(function () { msg.style.display = 'none'; document.getElementById('settingsBox').style.display = 'none'; }, 900);\n  });\n  var savedUrl = 'https://script.google.com/macros/s/AKfycbwugi5-aLgVQwiN7hnKb1kaPYOjhpyTI6oya2gWpmfDF1hK8ukLtXeksOjxKba7s0KM/exec';\n  localStorage.setItem('antRegFormWebAppUrl', savedUrl);\n  document.getElementById('settingsBox').style.display = 'none';\n  document.getElementById('editSetupLink').parentElement.style.display = 'none';\n\n  document.getElementById('submitBtn').addEventListener('click', function () {\n    var url = localStorage.getItem('antRegFormWebAppUrl');\n    var status = document.getElementById('submitStatus');\n    if (!url) {\n      status.textContent = 'Paste your Apps Script Web App URL above and click Save first.';\n      status.style.color = '#c62828';\n      return;\n    }\n    var fields = [];\n    document.querySelectorAll('.arf-field').forEach(function (fieldEl) {\n      var label = fieldEl.querySelector('label');\n      var input = fieldEl.querySelector('input, textarea, select');\n      if (label && input) fields.push({ label: label.textContent, value: input.value });\n    });\n    var signatures = [\n      { label: 'Signature of Life Insured / Policy Owner', dataUrl: document.getElementById('sig1').toDataURL('image/png') },\n      { label: 'Signature of Premium Payor Person', dataUrl: document.getElementById('sig2').toDataURL('image/png') },\n      { label: 'Signature of Policy Owner', dataUrl: document.getElementById('sig3').toDataURL('image/png') },\n    ];\n    var payload = JSON.stringify({ fields: fields, signatures: signatures });\n    var form = document.getElementById('hiddenSubmitForm');\n    form.action = url;\n    document.getElementById('payloadInput').value = payload;\n    form.submit();\n    status.style.color = '#00913f';\n    status.textContent = 'Form submitted.';\n  });\n})();\n<\u002Fscript>\n\n\n<\u002Fbody><\u002Fhtml>"
+  </script>
+</body>
+</html>
